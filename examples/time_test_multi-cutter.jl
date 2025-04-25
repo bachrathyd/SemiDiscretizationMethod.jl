@@ -22,94 +22,126 @@ using LaTeXStrings
 Threads.nthreads()
 
 
-function createMathieuProblem(δ, ε, b0, a1; T=2π)
-    AMx = ProportionalMX(t -> @SMatrix [0.0 1.0; -δ-ε*cos(2π / T * t) -a1])
-    #τ1=t->1+0.3*sin(t/T*2*pi*3)#2.75π # if function is needed, the use τ1 = t->foo(t)
-    #τ1 = 0.5π # if function is needed, the use τ1 = t->foo(t])
-    #τ1 =τ1 = t->0.5π-0.5π*cos(2π / T * t * 2) 
-    #τ1 = τ1 = t -> 2π - 0.5π * (t / T)
-    τ1 = τ1 = t -> 2π
-    BMx1 = DelayMX(τ1, @SMatrix [0.0 0.0; b0 0.0])
-    #τ2=1.0π # if function is needed, the use τ1 = t->foo(t)
-    #τ2 = τ1 = t -> 1.0π + 1.0π * (t / T)
-    ##TODO: nem ugyan az ha függvény vagy, ha konstans!?!?!?!?! 
-    #BMx2 = DelayMX(τ2, t -> @SMatrix [0.0 0.0; b0 0.0])
-    cVec = Additive(t -> @SVector [0.0, 1.0 * cos(2π / T * t * 4)])
-    #LDDEProblem(AMx, [BMx1, BMx2], cVec)
-    LDDEProblem(AMx, BMx1, cVec)
+using SemiDiscretizationMethod
+using StaticArrays
 
+function createMultiCutterProblem(m, c, k, kw, vf, RVA, RVF, Ω, delay_ratio)
+    # Time-varying delay function
+    τ0 = 2 * pi / Ω
+    τ1(t) = delay_ratio * τ0 * (1 + RVA * cos(RVF * Ω * t))
+    τ2(t) = (1.0 - delay_ratio) * τ0 * (1 + RVA * cos(RVF * Ω * t))
 
-    # AMx = ProportionalMX(t -> SMatrix{2,2,Float64}([0.0 1.0; -δ-ε*cos(2π / T * t) -a1])::SMatrix{2,2,Float64})
-    # τ1 = τ1 = t -> Float64(2π)::Float64
-    # BMx1 = DelayMX(τ1, t -> SMatrix{2,2,Float64}([0.0 0.0; b0 0.0])::SMatrix{2,2,Float64})
-    # cVec = Additive(t -> SVector{2,Float64}([0.0, 1.0 * cos(2π / T * t * 4)])::SVector{2,Float64})
-    # LDDEProblem(AMx, BMx1, cVec)
+    # System matrix A(t)
+    AMx = ProportionalMX(t -> @SMatrix [
+        0.0 1.0 0.0 0.0;
+        -k/m -c/m 0.0 0.0;
+        0.0 0.0 0.0 1.0;
+        0.0 0.0 -k/m -c/m
+    ])
 
+    # Delay matrix B1(t): influence of delayed x2 on tool 1
+    BMx1 = DelayMX(τ1, t -> @SMatrix [
+        0.0 0.0 0.0 0.0;
+        0.0 0.0 kw/m 0.0;
+        0.0 0.0 0.0 0.0;
+        0.0 0.0 0.0 0.0
+    ])
 
+    # Delay matrix B2(t): influence of delayed x1 on tool 2
+    BMx2 = DelayMX(τ2, t -> @SMatrix [
+        0.0 0.0 0.0 0.0;
+        0.0 0.0 0.0 0.0;
+        0.0 0.0 0.0 0.0;
+        kw/m 0.0 0.0 0.0
+    ])
 
-    # AMx = ProportionalMX(t -> [0.0 1.0; -δ-ε*cos(2π / T * t) -a1])
-    # τ1 = τ1 = t -> Float64(2π)
-    # BMx1 = DelayMX(τ1, t -> [0.0 0.0; b0 0.0])
-    # cVec = Additive(t -> [0.0, 1.0 * cos(2π / T * t * 4)])
-    # LDDEProblem(AMx, BMx1, cVec)
+    # Additive excitation: kw * vf * τ(t)
+    cVec = Additive(t -> @SVector [
+        0.0,
+        kw * vf * τ1(t) / m,
+        0.0,
+        kw * vf * τ2(t) / m
+    ])
+
+    # Define and return the problem
+    LDDEProblem(AMx, [BMx1, BMx2], cVec)
 end
 
-Ndisc = 200
 
-τmax = 2π # the largest τ of the system
-T = 20π #Principle period of the system (sin(t)=cos(t+T)) 
-mathieu_lddep = createMathieuProblem(3.0, 3.0, -0.5, 0.2, T=T) # LDDE problem for Hayes equation
-method = SemiDiscretization(5, T / Ndisc) # 3rd order semi discretization with Δt=0.1
+# Define physical parameters
+m = 11.0                          # kg
+k = 14.5e6                        # N/m
+ζ = 0.0066                        # damping ratio
+ωn = sqrt(k / m)                 # rad/s
+c = 2 * m * ζ * ωn               # Ns/m
+kw = 237e3                       # N/m^2
+vf = 0.0001                       # m/s
+RVA = 0.05                       # 5%
+RVF = 0.20                        # Relative variation freq
+Ω = 1000 * 2π / 60               # rad/s
+delay_ratio = 0.6#
+
+T = 2 * pi / (Ω * RVF)
+# Call the problem constructor
+prob_lddep = createMultiCutterProblem(m, c, k, kw, vf, RVA, RVF, Ω, delay_ratio)
+
+
+
+Ndisc = 200#15
+τmax = 2 * pi / (Ω * (1 - RVA)) # the largest τ of the system
+τ1 = delay_ratio * 2 * pi / Ω * (1 + RVA)
+τ2 = delay_ratio * 2 * pi / Ω * (1 + RVA)
+τmax = maximum([τ1, τ2])
+T / τmax
+
+method = SemiDiscretization(2, T / Ndisc) # 3rd order semi discretization with Δt=0.1
 Nsteps = Int((T + 100eps(T)) ÷ method.Δt)
 
-#mappingLR = DiscreteMapping_LR(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)#The discrete mapping of the system
-#μLR = spectralRadiusOfMapping(mappingLR)
-
-@time mapping = DiscreteMapping(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true);#The discrete mapping of the system
-@show @time μ = spectralRadiusOfMapping(mapping)
-@time mapping = DiscreteMapping_1step(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true);#The discrete mapping of the system
-@show @time μ = spectralRadiusOfMapping(mapping)
-@time mappingLR = DiscreteMapping_LR(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true);#The discrete mapping of the system
-@show @time μLR = spectralRadiusOfMapping(mappingLR)
+#@time mapping = DiscreteMapping(prob_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true);#The discrete mapping of the system
+#@show @time μ = spectralRadiusOfMapping(mapping)
+#@time mapping = DiscreteMapping_1step(prob_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true);#The discrete mapping of the system
+#@show @time μ = spectralRadiusOfMapping(mapping)
+#@time mappingLR = DiscreteMapping_LR(prob_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true);#The discrete mapping of the system
+#@show @time μLR = spectralRadiusOfMapping(mappingLR)
 
 
 
 BenchmarkTools.DEFAULT_PARAMETERS.samples = 100.0
 BenchmarkTools.DEFAULT_PARAMETERS.seconds = 3.0
-@show t = @benchmark spectralRadiusOfMapping($mappingLR)
-BenchmarkTools.median(t).time / 1e9
+#@show t = @benchmark spectralRadiusOfMapping($mappingLR)
+#BenchmarkTools.median(t).time / 1e9
 
 
-@benchmark abs(eigs(mappingLR.RmappingMX, mappingLR.LmappingMX)[1][1])
-@benchmark abs(eigen(collect(mappingLR.RmappingMX), collect(mappingLR.LmappingMX), sortby=abs).values[end])
+#@benchmark abs(eigs(mappingLR.RmappingMX, mappingLR.LmappingMX)[1][1])
+#@benchmark abs(eigen(collect(mappingLR.RmappingMX), collect(mappingLR.LmappingMX), sortby=abs).values[end])
 
-#tiem of eig test for different precision-------
-tt = []
-muerror = []
-kpowv = -15:0.25:0
-for kpow in kpowv
-    tloc = @elapsed μLR = spectralRadiusOfMapping(mapping, nev=1, tol=10.0^kpow)
-    push!(tt, tloc)
-    push!(muerror, μ - μLR)
-    println(μ - μLR)
-end
-scatter(tt, log.(abs.(muerror)))
-#scatter!(tt,log.(abs.(muerror)))
-#scatter(kpowv,log.(abs.(muerror)))
-#scatter!(tt,kpowv)
+##tiem of eig test for different precision-------
+#tt = []
+#muerror = []
+#kpowv = -15:0.25:0
+#for kpow in kpowv
+#    tloc = @elapsed μLR = spectralRadiusOfMapping(mapping, nev=1, tol=10.0^kpow)
+#    push!(tt, tloc)
+#    push!(muerror, μ - μLR)
+#    println(μ - μLR)
+#end
+#scatter(tt, log.(abs.(muerror)))
+##scatter!(tt,log.(abs.(muerror)))
+##scatter(kpowv,log.(abs.(muerror)))
+##scatter!(tt,kpowv)
+#
+##--------- profiling the code ---------------
 
-#--------- profiling the code ---------------
-
-using Profile
-function foo(n)
-    for k in 1:n
-        map = DiscreteMapping_LR(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)#The discrete mapping of the system
-        μLR_SP = spectralRadiusOfMapping(map, nev=1, tol=1e-5)
-    end
-end
-foo(4)
-
-@profview foo(100)
+#using Profile
+#function foo(n)
+#    for k in 1:n
+#        map = DiscreteMapping_LR(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)#The discrete mapping of the system
+#        μLR_SP = spectralRadiusOfMapping(map, nev=1, tol=1e-5)
+#    end
+#end
+#foo(4)
+#
+#@profview foo(100)
 
 
 
@@ -124,17 +156,19 @@ BenchmarkTools.DEFAULT_PARAMETERS.samples = 1000.0
 BenchmarkTools.DEFAULT_PARAMETERS.seconds = 2.0
 
 
-Nv = ceil.(10 .^ (1.0:0.01:5.61)) #5.61  #100:100:3000
-Nv = ceil.(10 .^ (1.0:0.05:6))
+#Nv = ceil.(10 .^ (1.2:0.05:5.61)) #5.61  #100:100:3000
+Nv = ceil.(10 .^ (1.2:0.05:6))
+Nv = ceil.(10 .^ (1.2:0.1:5.5))
+#Nv = ceil.(10 .^ (1.2:0.2:6))
 Twaitfor_SH = 10.0;
 
 #Fast(er) test
-BenchmarkTools.DEFAULT_PARAMETERS.samples = 50.0
-BenchmarkTools.DEFAULT_PARAMETERS.seconds = 0.1
-
-#Fast(er) test
-BenchmarkTools.DEFAULT_PARAMETERS.samples = 10.0
-BenchmarkTools.DEFAULT_PARAMETERS.seconds = 0.01
+BenchmarkTools.DEFAULT_PARAMETERS.samples = 100.0
+BenchmarkTools.DEFAULT_PARAMETERS.seconds = 1.0
+#
+##Fast(er) test
+#BenchmarkTools.DEFAULT_PARAMETERS.samples = 10.0
+#BenchmarkTools.DEFAULT_PARAMETERS.seconds = 0.01
 
 
 #Nv = ceil.(10 .^ (1.0:0.025:3.00))
@@ -178,12 +212,13 @@ tfixP_LR_S = zeros(Float64, length(Nv));
 fixLR_S = zeros(Float64, length(Nv));
 
 
-f1 = (x) -> log(x) ./ log(10)
-f2 = (x) -> log(x) ./ log(10)
+#f1 = (x) -> log(x) ./ log(10)
+#f2 = (x) -> log(x) ./ log(10)
 
 #kNdisc=10
 #@profview  
 for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of the first compliation time
+    println("=====================================================")
     if kNdisc == 1
         tmake_SH_PRi[kNdisc] = 0.0
         tmake_SH_Ci[kNdisc] = 0.0
@@ -205,39 +240,35 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
     println([kNdisc / length(Nv), Ndisc])
 
     #@show Naver = maximum([ceil(4 - (log(Ndisc) / log(10))) * 2, 1])
-    @show Naver = 1
-    τmax = 2π # the largest τ of the system
-    T = 20π #Principle period of the system (sin(t)=cos(t+T)) 
-    mathieu_lddep = createMathieuProblem(3.0, 3.0, -0.5, 0.2, T=T) # LDDE problem for Hayes equation
+    Naver = 1
     method = SemiDiscretization(1, T / Ndisc) # 3rd order semi discretization with Δt=0.1
     Nsteps = Int((T + 100eps(T)) ÷ method.Δt)
 
 
 
-   
-    begin
-        @warn "Beam modell is used!!! see the beam_delay_deedbacl.jl file"
-        Tper = TperpTspeed * Tspeed
-        T=Tper
-        #mathieu_lddep=delay_beam_feedback(210e9, 1e-4, 7800, 1.0, 0.01, 6, 0.3, 0.955, 0.0001927248223318863, 6.3, Val(5))
-        mathieu_lddep = delay_beam_feedback(E, A, ρ, L, η, N, P, τpTspeed, Tspeed, TperpTspeed, Val(N - 1))
-        τmax = τpTspeed * Tspeed
-        method = SemiDiscretization(2, Tper / Ndisc) # 3rd order semi discretization with Δt=0.1
-        Nsteps = Int((Tper + 100eps(Tper)) ÷ method.Δt)
-    end
+
+    #mathieu_lddep=delay_beam_feedback(210e9, 1e-4, 7800, 1.0, 0.01, 6, 0.3, 0.955, 0.0001927248223318863, 6.3, Val(5))
+    prob_lddep = createMultiCutterProblem(m, c, k, kw, vf, RVA, RVF, Ω, delay_ratio)
+
+    method = SemiDiscretization(2, T / Ndisc) # 3rd order semi discretization with Δt=0.1
+    Nsteps = Int((T + 100eps(T)) ÷ method.Δt)
+
 
 
     for _ = 1:Naver
 
 
-        #tmake_SH_PRi[kNdisc] += @elapsed resultPR = SemiDiscretizationMethod.calculateResults(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)
-        t = @benchmark SemiDiscretizationMethod.calculateResults($mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)
-
+        t = @benchmark SemiDiscretizationMethod.calculateResults($prob_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)
+        print("PR calc: ")
+        @show t
         tmake_SH_PRi[kNdisc] += BenchmarkTools.median(t).time / 1e9
         tmake_SH_PRi_S[kNdisc] += BenchmarkTools.std(t).time / 1e9
-        resultPR = SemiDiscretizationMethod.calculateResults(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)
-        if domoreSH_PR
+        resultPR = SemiDiscretizationMethod.calculateResults(prob_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true)
+
+        if (kNdisc < 5 || tmake_SH_Ci[kNdisc-1] < Twaitfor_SH * Naver) #domoreSH_PR
             #tmake_SH_Ci[kNdisc] += @elapsed mmpp2 = SemiDiscretizationMethod.DiscreteMappingSteps(resultPR)
+            
+            print("Creating Ci:  ")
             t = @benchmark SemiDiscretizationMethod.DiscreteMappingSteps($resultPR)
             @show t
             tmake_SH_Ci[kNdisc] += BenchmarkTools.median(t).time / 1e9
@@ -245,20 +276,22 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
             mmpp2 = SemiDiscretizationMethod.DiscreteMappingSteps(resultPR)
 
 
-            domoreSH_PR = tmake_SH_Ci[kNdisc] < Twaitfor_SH * Naver
+            #domoreSH_PR = tmake_SH_Ci[kNdisc] < Twaitfor_SH * Naver
         else
             tmake_SH_Ci[kNdisc] = NaN
         end
-        if domoreSH
-            println("domoreSH")
+        if (kNdisc < 5 || tmake_SH_PhiALL[kNdisc-1] < Twaitfor_SH * Naver)#domoreSH
+            #println("domoreSH")
             #tmake_SH_PhiALL[kNdisc] += @elapsed mappingFull = DiscreteMapping_1step(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true) #The discrete mapping of the system
-            t = @benchmark DiscreteMapping_1step($mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true) #The discrete mapping of the system
+            t = @benchmark DiscreteMapping_1step($prob_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true) #The discrete mapping of the system
+
+            print("DiscreteMapping_1step - products:  ")
             @show t
             tmake_SH_PhiALL[kNdisc] += BenchmarkTools.median(t).time / 1e9
             tmake_SH_PhiALL_S[kNdisc] += BenchmarkTools.std(t).time / 1e9
-            mappingFull = DiscreteMapping_1step(mathieu_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true) #The discrete mapping of the system
+            mappingFull = DiscreteMapping_1step(prob_lddep, method, τmax, n_steps=Nsteps, calculate_additive=true) #The discrete mapping of the system
 
-
+            print("spectralRadiusOfMapping full Phi:  ")
             #teig_SH[kNdisc] += @elapsed μSH[kNdisc] = spectralRadiusOfMapping(mappingFull,nev=NEV,tol=10.0^kpow)
             t = @benchmark spectralRadiusOfMapping($mappingFull, nev=NEV, tol=10.0^kpow)
             @show t
@@ -268,29 +301,34 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
 
             # fixSH[kNdisc]  += @elapsed μSH[kNdisc] = fixPointOfMapping(mappingFull)
             t = @benchmark fixPointOfMapping($mappingFull)
+            
+            print("fixPointOfMapping:  ")
             @show t
             fixSH[kNdisc] += BenchmarkTools.median(t).time / 1e9
             fixSH_S[kNdisc] += BenchmarkTools.std(t).time / 1e9
 
 
-            domoreSH = tmake_SH_PhiALL[kNdisc] < Twaitfor_SH * Naver
+            #domoreSH = tmake_SH_PhiALL[kNdisc] < Twaitfor_SH * Naver
         else
             tmake_SH_PhiALL[kNdisc] = NaN
             teig_SH[kNdisc] = NaN
             fixSH[kNdisc] = NaN
         end
 
-        #tmake_LR[kNdisc] += @elapsed mappingLR = DiscreteMapping_LR(mathieu_lddep, method, τmax, n_steps=Int((T + 100eps(T)) ÷ method.Δt), calculate_additive=true)#The discrete mapping of the system
-        t = @benchmark DiscreteMapping_LR($mathieu_lddep, method, τmax, n_steps=Int((T + 100eps(T)) ÷ method.Δt), calculate_additive=true)#The discrete mapping of the system
+        t = @benchmark DiscreteMapping_LR($prob_lddep, method, τmax, n_steps=Int((T + 100eps(T)) ÷ method.Δt), calculate_additive=true)#The discrete mapping of the system
+        println("---- LR ---")
+        print("DiscreteMapping_LR:  ")
         @show t
         tmake_LR[kNdisc] += BenchmarkTools.median(t).time / 1e9
         tmake_LR_S[kNdisc] += BenchmarkTools.std(t).time / 1e9
-        mappingLR = DiscreteMapping_LR(mathieu_lddep, method, τmax, n_steps=Int((T + 100eps(T)) ÷ method.Δt), calculate_additive=true)#The discrete mapping of the system
+        mappingLR = DiscreteMapping_LR(prob_lddep, method, τmax, n_steps=Int((T + 100eps(T)) ÷ method.Δt), calculate_additive=true)#The discrete mapping of the system
 
 
 
         #teig_LR[kNdisc] += @elapsed μLR[kNdisc] = spectralRadiusOfMapping(mappingLR,nev=NEV,tol=10.0^kpow)
         t = @benchmark spectralRadiusOfMapping($mappingLR, nev=NEV, tol=10.0^kpow)
+        
+        print("DiscreteMapping_LR - spectralRadiusOfMapping  ")
         @show t
         teig_LR[kNdisc] += BenchmarkTools.median(t).time / 1e9
         teig_LR_S[kNdisc] += BenchmarkTools.std(t).time / 1e9
@@ -298,6 +336,8 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
 
         # tfixP_LR[kNdisc] += @elapsed xPLR = fixPointOfMapping(mappingLR)
         t = @benchmark fixPointOfMapping($mappingLR)
+        
+        print("DiscreteMapping_LR - fixPointOfMapping  ")
         @show t
         fixLR[kNdisc] += BenchmarkTools.median(t).time / 1e9
         fixLR_S[kNdisc] += BenchmarkTools.std(t).time / 1e9
@@ -334,6 +374,9 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
     # @show norm(μSH[kNdisc]-μLR[kNdisc])
 
     #if (kNdisc>5000  ||  mod(kNdisc,10)==0)
+
+    f1 = (x) -> log(x) ./ log(10)
+    f2 = (x) -> log(x) ./ log(10)
     df = DataFrame(
         Nv_data=Nv,
         tmake_SH_data=tmake_SH_PhiALL,
@@ -350,7 +393,7 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
         teig_LR_data_log=f1.(teig_LR),
         tfixP_LR_data_log=f1.(tfixP_LR))
 
-    CSV.write("CPU_Timev__T_" * string(T) * "_tau_" * string(τmax) * ".csv", df)
+    CSV.write("CPU_Timev__T_multi_cutter" * string(T) * "_tau_" * string(τmax) * ".csv", df)
     println("data saved")
     #end
 
@@ -390,11 +433,11 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
     fplot!(f2.(Nv), f1.(tmake_SH_PhiALL), ribbon=tmake_SH_PhiALL_S .* ScaleSTD, labels="tmake_SH_Phi_1step...prod(...)")
     fplot!(f2.(Nv), f1.(teig_SH), ribbon=teig_SH_S .* ScaleSTD, labels="teig_SH: eigs(PHI) only")
     #fplot!(f2.(Nv), f1.(tfixP_SH),ribbon=tfixP_SH_S .* ScaleSTD, labels="teig_SH: fix Point")
-    fplot!(f2.(Nv), f1.(tmake_LR), ribbon=tmake_LR_S .* ScaleSTD, labels="tmake_LR", linewidth=2)
-    fplot!(f2.(Nv), f1.(teig_LR), ribbon=teig_LR_S .* ScaleSTD, labels="teig_LR: eigs(ΦR,ΦL) only", linewidth=2)
+    fplot!(f2.(Nv), f1.(tmake_LR), ribbon=tmake_LR_S .* ScaleSTD, labels="tmake_LR", linewidth=4)
+    fplot!(f2.(Nv), f1.(teig_LR), ribbon=teig_LR_S .* ScaleSTD, labels="teig_LR: eigs(ΦR,ΦL) only", linewidth=4)
 
     fplot!(f2.(Nv), f1.(fixSH), ribbon=fixSH_S .* ScaleSTD, labels="fixSH", linewidth=1)
-    fplot!(f2.(Nv), f1.(fixLR), ribbon=fixLR_S .* ScaleSTD, labels="fixLR", linewidth=2)
+    fplot!(f2.(Nv), f1.(fixLR), ribbon=fixLR_S .* ScaleSTD, labels="fixLR", linewidth=4)
 
     #fplot!(xticks =collect( 10 .^(1:0.25:5))) 
     #fplot!(yticks =collect( 10.0.^ (-5:1:5))) 
@@ -407,7 +450,7 @@ for kNdisc in vcat([1, 1], 1:length(Nv)) #the first is repated to get read of th
             xticks=10.0 .^ (1:6), yticks=10.0 .^ (-5:3))
     )
 
-    savefig("myplot3.svg")
+    savefig("myplot_multi_cutter.svg")
 end
 
 
@@ -509,4 +552,5 @@ display(
 )
 
 
-savefig("myplot_final32STD05_T20pi_2__eigs_test.svg")
+
+savefig("myplot_multi_cutter_eigs_test2.svg")

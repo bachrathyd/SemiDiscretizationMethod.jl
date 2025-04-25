@@ -5,6 +5,8 @@ using Reexport
 @reexport using SparseArrays
 @reexport using StaticArrays
 @reexport using Arpack
+
+using KrylovKit
 using QuadGK
 using Lazy: iterated, take
 

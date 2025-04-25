@@ -41,8 +41,8 @@ function DiscreteMappingSteps_LR(rst::AbstractResult{d}) where {d}
     sizehint!(i, Nelements_approx)
     sizehint!(j, Nelements_approx)
     sizehint!(v, Nelements_approx)
-
-    for (iIPR, smx_IPR) in enumerate(rst.subMXs)#P,R1,R2....
+println("éalskdjfélaskjdféalsdkjféalskjféalsdkdjfélkaj")
+    @inbound for (iIPR, smx_IPR) in enumerate(rst.subMXs)#P,R1,R2....
         for (it, smx) in enumerate(smx_IPR) #each time
             for iloc in eachindex(smx.ranges, smx.MXs)
 
@@ -69,7 +69,12 @@ function DiscreteMappingSteps_LR(rst::AbstractResult{d}) where {d}
     r = rst.n ÷ d
     p = rst.n_steps
     rhat = maximum([r, p - 1])
-
+    #rhat = maximum([r, p - 1])+10
+    #rhat = maximum([maximum(j), p - 1])
+    #@show (maximum(i), maximum(j), p , (rhat + p + 1) )
+    #@show (maximum(i), maximum(j), p *d, (rhat + p + 1)*d )
+    #@show i
+    #@show j
     PHI = sparse(i, j, v, p * d, (rhat + p + 1) * d)
     dropzeros!(PHI)
 
@@ -97,14 +102,21 @@ function DiscreteMappingSteps_LR(rst::AbstractResult{d}) where {d}
     ([rst.ts[1], rst.ts[end]], PHILL, PHIRR, mappingVs)
 end
 
-
+using KrylovKit
 function spectralRadiusOfMapping(mappLR::DiscreteMapping_LR{tT,mxT,vT}; args...)::mxT.parameters[1] where {tT,mxT,vT}
    # if size(mappLR.LmappingMX,1)>30
         #println("Full")
     #    return abs(eigen(collect(mappLR.RmappingMX),collect(mappLR.LmappingMX),sortby=abs).values[end])
     #else
-    #    #println("SP")
+    #    #println("Sparse LR matrix- MF-SD")
     return abs(eigs(mappLR.RmappingMX, mappLR.LmappingMX; args...)[1][1])::mxT.parameters[1]
+ 
+## using KrylovKit - geneigsolve is not working : not isposdef
+#@show typeof(mappLR.RmappingMX)
+#@show isposdef(mappLR.LmappingMX)
+#@show isposdef(mappLR.RmappingMX)
+#fooLR(x)=(mappLR.RmappingMX*x,mappLR.LmappingMX*x)
+#return abs(KrylovKit.geneigsolve(fooLR,size(mappLR.RmappingMX,1);isposdef=true)[1][1])
     #end
 end
 
